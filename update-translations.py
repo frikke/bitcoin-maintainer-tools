@@ -22,18 +22,26 @@ import os
 import io
 import xml.etree.ElementTree as ET
 
+# Name of Qt lconvert tool
+LCONVERT = 'lconvert'
 # Name of transifex tool
 TX = 'tx'
-# Name of source language file
-SOURCE_LANG = 'bitcoin_en.ts'
+# Name of source language file without extension
+SOURCE_LANG = 'bitcoin_en'
 # Directory with locale files
 LOCALE_DIR = 'src/qt/locale'
-# Minimum number of messages for translation to be considered at all
-MIN_NUM_MESSAGES = 10
+# Minimum number of non-numerus messages for translation to be considered at all
+MIN_NUM_NONNUMERUS_MESSAGES = 10
 # Regexp to check for Bitcoin addresses
 ADDRESS_REGEXP = re.compile('([13]|bc1)[a-zA-Z0-9]{30,}')
 # Path to git
 GIT = os.getenv("GIT", "git")
+# Original content file suffix
+ORIGINAL_SUFFIX = '.orig'
+# Native Qt translation file (TS) format
+FORMAT_TS = '.ts'
+# XLIFF file format
+FORMAT_XLIFF = '.xlf'
 
 def check_at_repository_root():
     if not os.path.exists('.git'):
@@ -49,13 +57,25 @@ def remove_current_translations():
     '''
     for (_,name) in all_ts_files():
         os.remove(name)
-    for (_,name) in all_ts_files('.orig'):
-        os.remove(name + '.orig')
+    for (_,name) in all_ts_files(suffix=ORIGINAL_SUFFIX):
+        os.remove(name + ORIGINAL_SUFFIX)
 
 def fetch_all_translations():
     if subprocess.call([TX, 'pull', '-f', '-a']):
         print('Error while fetching translations', file=sys.stderr)
         sys.exit(1)
+
+def convert_xlf_to_ts():
+    xliff_files =  all_ts_files(file_format=FORMAT_XLIFF)
+    if not xliff_files:
+        return False
+
+    for (_, name) in xliff_files:
+        outname = name.replace(FORMAT_XLIFF, FORMAT_TS)
+        print('Converting %s to %s...' % (name, outname))
+        subprocess.check_call([LCONVERT, '-o', outname, '-i', name])
+        os.remove(name)
+    return True
 
 def find_format_specifiers(s):
     '''Find all format specifiers in a string.'''
@@ -113,10 +133,10 @@ def check_format_specifiers(source, translation, errors, numerus):
             return False
     return True
 
-def all_ts_files(suffix='', include_source=False):
+def all_ts_files(file_format=FORMAT_TS, suffix='', include_source=False):
     for filename in os.listdir(LOCALE_DIR):
         # process only language files, and do not process source language
-        if not filename.endswith('.ts'+suffix) or (not include_source and filename == SOURCE_LANG+suffix):
+        if not filename.endswith(file_format + suffix) or (not include_source and filename == SOURCE_LANG + file_format + suffix):
             continue
         if suffix: # remove provided suffix
             filename = filename[0:-len(suffix)]
@@ -143,7 +163,41 @@ def contains_bitcoin_addr(text, errors):
         return True
     return False
 
-def postprocess_translations(reduce_diff_hacks=False):
+def postprocess_message(filename, message, xliff_compatible_mode):
+    translation_node = message.find('translation')
+    if not xliff_compatible_mode and translation_node.get('type') == 'unfinished':
+        return False
+
+    numerus = message.get('numerus') == 'yes'
+    source = message.find('source').text
+    # pick all numerusforms
+    if numerus:
+        translations = [i.text for i in translation_node.findall('numerusform')]
+    else:
+        if translation_node.text is None or translation_node.text == source:
+            return False
+
+        translations = [translation_node.text]
+
+    for translation in translations:
+        if translation is None:
+            continue
+        errors = []
+        valid = check_format_specifiers(source, translation, errors, numerus) and not contains_bitcoin_addr(translation, errors)
+
+        for error in errors:
+            print('%s: %s' % (filename, error))
+
+        if not valid:
+            return False
+
+    # Remove location tags
+    for location in message.findall('location'):
+        message.remove(location)
+
+    return True
+
+def postprocess_translations(xliff_compatible_mode, reduce_diff_hacks=False):
     print('Checking and postprocessing...')
 
     if reduce_diff_hacks:
@@ -152,13 +206,12 @@ def postprocess_translations(reduce_diff_hacks=False):
         ET._escape_cdata = escape_cdata
 
     for (filename,filepath) in all_ts_files():
-        os.rename(filepath, filepath+'.orig')
+        os.rename(filepath, filepath + ORIGINAL_SUFFIX)
 
-    have_errors = False
-    for (filename,filepath) in all_ts_files('.orig'):
+    for (filename,filepath) in all_ts_files(suffix=ORIGINAL_SUFFIX):
         # pre-fixups to cope with transifex output
         parser = ET.XMLParser(encoding='utf-8') # need to override encoding because 'utf8' is not understood only 'utf-8'
-        with open(filepath + '.orig', 'rb') as f:
+        with open(filepath + ORIGINAL_SUFFIX, 'rb') as f:
             data = f.read()
         # remove control characters; this must be done over the entire file otherwise the XML parser will fail
         data = remove_invalid_characters(data)
@@ -168,44 +221,21 @@ def postprocess_translations(reduce_diff_hacks=False):
         root = tree.getroot()
         for context in root.findall('context'):
             for message in context.findall('message'):
-                numerus = message.get('numerus') == 'yes'
-                source = message.find('source').text
-                translation_node = message.find('translation')
-                # pick all numerusforms
-                if numerus:
-                    translations = [i.text for i in translation_node.findall('numerusform')]
-                else:
-                    translations = [translation_node.text]
+                if not postprocess_message(filename, message, xliff_compatible_mode):
+                    context.remove(message);
 
-                for translation in translations:
-                    if translation is None:
-                        continue
-                    errors = []
-                    valid = check_format_specifiers(source, translation, errors, numerus) and not contains_bitcoin_addr(translation, errors)
-
-                    for error in errors:
-                        print('%s: %s' % (filename, error))
-
-                    if not valid: # set type to unfinished and clear string if invalid
-                        translation_node.clear()
-                        translation_node.set('type', 'unfinished')
-                        have_errors = True
-
-                # Remove location tags
-                for location in message.findall('location'):
-                    message.remove(location)
-
-                # Remove entire message if it is an unfinished translation
-                if translation_node.get('type') == 'unfinished':
-                    context.remove(message)
+            if not context.findall('message'):
+                root.remove(context)
 
         # check if document is (virtually) empty, and remove it if so
-        num_messages = 0
+        num_nonnumerus_messages = 0
         for context in root.findall('context'):
             for message in context.findall('message'):
-                num_messages += 1
-        if num_messages < MIN_NUM_MESSAGES:
-            print('Removing %s, as it contains only %i messages' % (filepath, num_messages))
+                if message.get('numerus') != 'yes':
+                    num_nonnumerus_messages += 1
+
+        if num_nonnumerus_messages < MIN_NUM_NONNUMERUS_MESSAGES:
+            print('Removing %s, as it contains only %i non-numerus messages' % (filepath, num_nonnumerus_messages))
             continue
 
         # write fixed-up tree
@@ -219,7 +249,6 @@ def postprocess_translations(reduce_diff_hacks=False):
                 f.write(out)
         else:
             tree.write(filepath, encoding='utf-8')
-    return have_errors
 
 def update_git():
     '''
@@ -255,7 +284,8 @@ if __name__ == '__main__':
     check_at_repository_root()
     remove_current_translations()
     fetch_all_translations()
-    postprocess_translations()
+    xliff_compatible_mode = convert_xlf_to_ts()
+    postprocess_translations(xliff_compatible_mode)
     update_git()
     update_build_systems()
 

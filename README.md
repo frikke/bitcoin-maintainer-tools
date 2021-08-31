@@ -5,13 +5,21 @@ github-merge
 
 A small script to automate merging pull-requests securely and sign them with GPG.
 
-For example:
+For example, if the "to" repo is identical to the "from" repo:
 
 ```bash
 ./github-merge.py 1234
 ```
 
 (in any git repository) will help you merge pull request #1234 for the configured repository.
+
+Otherwise, for a differing "from" repo:
+
+```bash
+./github-merge.py --repo-from=bitcoin-core/gui 1234
+```
+
+will fetch the pull request from another monotree repository. Be sure to also set `githubmerge.pushmirrors` (see below).
 
 What it does:
 * Fetch master and the pull request.
@@ -31,6 +39,7 @@ couldn't mess with the sources.
 Configuring the github-merge tool for the bitcoin repository is done in the following way:
 
     git config githubmerge.repository bitcoin/bitcoin
+    git config githubmerge.pushmirrors "git@github.com:bitcoin-core/gui.git,git@github.com:YourPrivateMirror/bitcoin-core.git"
     git config githubmerge.testcmd "make -j4 check" (adapt to whatever you want to use for testing)
     git config --global user.signingkey mykeyid
 
@@ -109,7 +118,13 @@ backport
 --------
 
 Script to backport pull requests in order of merge, to minimize number of conflicts.
-Pull ids are listed in `to_backport.txt` or given on the command line.
+Pull ids are listed in `to_backport.txt` or given on the command line, and they must be prefixed
+with the repository name, e.g.:
+
+```bash
+../bitcoin-maintainer-tools/backport.py bitcoin/bitcoin#21907 bitcoin-core/gui#277 bitcoin-core/gui#365
+
+```
 
 Requires `pip3 install gitpython` or similar.
 
@@ -231,23 +246,6 @@ are read-only once they are written.
 Warning: Hardlinking only works within a filesystem, and may not work for all
 filesystems.
 
-transifex-migrate-resource
---------------------------
-
-Copy a transifex resource to another.
-
-Run the script providing the slug of the project and the slug of the old and new resource.
-The new resource should already have been created, but be otherwise empty. It should
-be based on the exact same source translation.
- 
-Example:
-Old resource slug: 'old'
-New resource slug: 'new'
- 
-python transifex-migrate-resource.py project old new
- 
-After running the command you will be asked for your Transifex username and password.
-
 list-pulls
 ----------
 
@@ -285,21 +283,24 @@ A script to verify gitian deterministic build signatures for a release in one
 glance. It will print a matrix of signer versus build package, and a list of
 missing keys.
 
-To be able to read gitian's YAML files, it needs the `pyyaml` module. This can
-be installed from pip, for example:
+To be able to read gitian's YAML files and verify PGP signatures, it needs the
+`pyyaml` and `gpg` modules. This can be installed from pip, for example:
 
 ```bash
-pip3 install pyyaml
+pip3 install --user pyyaml gpg
 ```
-(or install the distribution package, in Debian/Ubuntu this is `python3-yaml`)
+(or install the distribution package, in Debian/Ubuntu this is `python3-yaml` and `python3-gpg`)
 
-Example usage: `./gitian-verify.py -r 0.21.0rc5 -d ../gitian.sigs -k ../bitcoin/contrib/gitian-keys/keys.txt`
+The `gpg` module requires the [gpgme](https://www.gnupg.org/software/gpgme/index.html) library
+which is usually present on Linux, and can be installed with `brew install gpgme` on macOS.
+
+Example usage: `./gitian-verify.py -r 0.21.0rc5 -d ../gitian.sigs -k ../bitcoin/contrib/builder-keys/keys.txt`
 
 Where
 
 - `-r 0.21.0rc5` specifies the release to verify signatures for.
 - `-d ../gitian.sigs` specifies the directory where the repository with signatures, [gitian.sigs](https://github.com/bitcoin-core/gitian.sigs/) is checked out.
-- `../bitcoin/contrib/gitian-keys/keys.txt` is the path to `keys.txt` file inside the main repository that specifies the valid keys and what signers they belong to.
+- `../bitcoin/contrib/builder-keys/keys.txt` is the path to `keys.txt` file inside the main repository that specifies the valid keys and what signers they belong to.
 
 Example output:
 ```
@@ -320,6 +321,7 @@ The following statuses can be shown:
 
 - `Ok` Full match.
 - `No key` Signer name/key combination not in keys.txt, or key not known to GPG (which one of these it is, or both, will be listed under "Missing keys").
+- `Expired` Known key but it has expired.
 - `Bad` Known key but invalid PGP signature.
 - `Mismatch` Correct PGP signature but mismatching binaries.
 
