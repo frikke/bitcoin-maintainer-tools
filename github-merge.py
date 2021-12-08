@@ -36,12 +36,14 @@ ATTR_RESET = ''
 ATTR_PR = ''
 ATTR_NAME = ''
 ATTR_WARN = ''
+ATTR_HL = ''
 COMMIT_FORMAT = '%H %s (%an)%d'
 if os.name == 'posix': # if posix, assume we can use basic terminal escapes
     ATTR_RESET = '\033[0m'
     ATTR_PR = '\033[1;36m'
     ATTR_NAME = '\033[0;36m'
     ATTR_WARN = '\033[1;31m'
+    ATTR_HL = '\033[95m'
     COMMIT_FORMAT = '%C(bold blue)%H%Creset %s %C(cyan)(%an)%Creset%C(green)%d%Creset'
 
 def sanitize(s, newlines=False):
@@ -79,6 +81,8 @@ def sanitize_ghdata(rec):
     '''
     if 'title' in rec: # only for PRs
         rec['title'] = sanitize(rec['title'], newlines=False)
+    if rec['body'] is None:
+        rec['body'] = ''
     rec['body'] = sanitize(rec['body'], newlines=True)
 
     # "Github username may only contain alphanumeric characters or hyphens'.
@@ -228,10 +232,20 @@ def print_merge_details(pull_reference, title, branch, base_branch, head_branch,
                 print('* {} {}({}){}'.format(ack_msg, ATTR_NAME, ack_name, ATTR_RESET))
         else:
             print('{}Top commit has no ACKs!{}'.format(ATTR_WARN, ATTR_RESET))
+    show_message = False
     if message is not None and '@' in message:
         print('{}Merge message contains an @!{}'.format(ATTR_WARN, ATTR_RESET))
+        show_message = True
     if message is not None and '<!-' in message:
         print('{}Merge message contains an html comment!{}'.format(ATTR_WARN, ATTR_RESET))
+        show_message = True
+    if show_message:
+        # highlight what might have tripped a warning
+        message = message.replace('@', ATTR_HL + '@' + ATTR_RESET)
+        message = message.replace('<!-', ATTR_HL + '<!-' + ATTR_RESET)
+        print('-' * 75)
+        print(message)
+        print('-' * 75)
 
 def parse_arguments():
     epilog = '''
@@ -246,7 +260,7 @@ def parse_arguments():
     '''
     parser = argparse.ArgumentParser(description='Utility to merge, sign and push github pull requests',
             epilog=epilog)
-    parser.add_argument('--repo_from', metavar='repo_from', type=str, nargs='?',
+    parser.add_argument('--repo-from', '-r', metavar='repo_from', type=str, nargs='?',
         help='The repo to fetch the pull request from. Useful for monotree repositories. Can only be specified when branch==master. (default: githubmerge.repository setting)')
     parser.add_argument('pull', metavar='PULL', type=int, nargs=1,
         help='Pull request ID to merge')
@@ -290,7 +304,7 @@ def main():
         sys.exit(1)
     title = info['title'].strip()
     body = info['body'].strip()
-    pull_reference = (repo_from if is_other_fetch_repo else '') + '#' + pull
+    pull_reference = repo_from + '#' + pull
     # precedence order for destination branch argument:
     #   - command line argument
     #   - githubmerge.branch setting
@@ -304,7 +318,7 @@ def main():
     else:
         push_mirrors = []
         if is_other_fetch_repo:
-            print('ERROR: repo_from is only supported for the master development branch')
+            print('ERROR: --repo-from is only supported for the master development branch')
             sys.exit(1)
 
     # Initialize source branches
